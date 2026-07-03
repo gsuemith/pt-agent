@@ -12,29 +12,37 @@ import google.generativeai as genai
 
 # 1. Config & Credentials
 TWILIO_SID = os.getenv("TWILIO_ACCOUNT_SID")
+print(f"TWILIO_SID: {TWILIO_SID}")
 TWILIO_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+print(f"GEMINI_API_KEY: {GEMINI_API_KEY}")
 # Twilio's universal sandbox number
 TWILIO_NUMBER = "whatsapp:+14155238886" 
 # Your actual cell phone number
 MY_NUMBER = "whatsapp:+17034079779" 
 
 client = Client(TWILIO_SID, TWILIO_TOKEN)
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+if not GEMINI_API_KEY:
+    raise RuntimeError(
+        "GEMINI_API_KEY environment variable is not set. "
+        "Create a valid API key and set GEMINI_API_KEY in your environment or .env file."
+    )
+
+genai.configure(api_key=GEMINI_API_KEY)
 
 # 2. Initialize the AI Agent
 model = genai.GenerativeModel(
-    model_name="gemini-2.5-flash",
+    model_name="gemini-3.1-flash-lite",
     system_instruction="""
     You are a strict but encouraging personal accountability coach.
-    Your job is to track the user's daily habits, specifically focusing on:
-    1. Distance running and training mileage.
-    2. Weight training sessions.
-    3. General nutrition and macros.
-    Keep your responses punchy, text-friendly, and actionable.
+    Your job is to track the user's daily habits, specifically focusing on calorie and macro goals:
+    1. Ask a new user about their current and goal weight and what timeline they have in mind for their weight loss or gain.
+    2. Ask about their height, age, sex, waist circumference to calculate their Basal Metabolic Rate (BMR) and Total Daily Energy Expenditure (TDEE).
+    3. Recommend a daily calorie goal based on their TDEE and weight goals, and ask them to confirm it.
+    4. Ask the user to log their meals and snacks, and provide feedback on whether they are meeting their calorie and macro goals.
+    Limit responses to 1500 characters.
     """
 )
-# Keeps conversation history in memory while the server runs
-chat = model.start_chat(history=[]) 
 
 app = FastAPI()
 HISTORY_FILE = "whatsapp_history.json"
@@ -49,13 +57,14 @@ def send_daily_checkin():
     )
 
 # Schedule the check-in for 8:00 AM every day
-scheduler = BackgroundScheduler()
-scheduler.add_job(send_daily_checkin, 'cron', hour=8, minute=0)
-scheduler.start()
+# scheduler = BackgroundScheduler()
+# scheduler.add_job(send_daily_checkin, 'cron', hour=8, minute=0)
+# scheduler.start()
 
 # 4. The Reactive Webhook (Handling your replies)
 @app.post("/whatsapp")
 async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...)):
+    
 
     phone_number = From# 1. Pull the historical messages for this specific phone number
     history = load_user_history(From)
@@ -67,13 +76,12 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...)):
     print(Body)
     ai_response = model.generate_content(current_payload)
     print(ai_response.text)
-
     # 4. Commit this new exchange permanently to our JSON file
     save_to_history(From, Body, ai_response.text)
     
     # Format the AI's text into Twilio's required XML response format
     twiml = MessagingResponse()
-    twiml.message(ai_response.text)
+    twiml.message(ai_response.text)  # Append system instruction for context
     
     return Response(content=str(twiml), media_type="application/xml")
 
