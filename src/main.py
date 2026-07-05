@@ -1,6 +1,12 @@
 import os
-import json
 from dotenv import load_dotenv
+
+from .nutrition import (
+    build_daily_log_notification,
+    extract_structured_nutrition,
+    should_save_nutrition_log,
+)
+from .utils import get_user_record, load_user_history, save_nutrition_log, save_to_history
 
 load_dotenv()
 
@@ -39,14 +45,17 @@ model = genai.GenerativeModel(
     1. Ask a new user about their current and goal weight and what timeline they have in mind for their weight loss or gain.
     2. Ask about their height, age, sex, waist circumference to calculate their Basal Metabolic Rate (BMR) and Total Daily Energy Expenditure (TDEE).
     3. Recommend a daily calorie goal based on their TDEE and weight goals, and ask them to confirm it.
-    4. Ask the user to log their meals and snacks, and provide feedback on whether they are meeting their calorie and macro goals.
-    Limit responses to 1500 characters. Don't make any nutrition recommendations. Don't make any judgments about user choices or not meeting calorie goals.
+    4. Ask the user to log their meals and snacks with as much precision as their able.
+    5. Always report back the calories and macros from the user's current response at the top of your response..
+    6. Report the daily summary of the user's nutrition logs. The System Notification is based on user's previous nutrition logs.  Be sure to add any new reported calories to the system notification data.
+    7. Limit responses to 1500 characters. prioritize step 5 over 6.  
+    8. Do not include the system notification in your response.
+    Don't make any nutrition recommendations. Don't make any judgments about user choices or not meeting calorie goals.
     Praise the user for daily reports and ask about any missed meals or snacks. Encourage them to log everything, even if they went over their calorie goal.
     """
 )
 
 app = FastAPI()
-HISTORY_FILE = "whatsapp_history.json"
 
 # 3. The Proactive Cron Job (Daily Check-in)
 def send_daily_checkin():
@@ -72,49 +81,29 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...)):
     
     # 2. Append the incoming message to the temporary history array for the model
     current_payload = list(history)
-    current_payload.append({"role": "user", "parts": [Body]})
+    record = get_user_record(From)
+    system_notification = build_daily_log_notification(
+        record["user_profile"],
+        record["nutrition_logs"],
+    )
+    print(system_notification)
+    current_payload.append({"role": "user", "parts": [system_notification, Body]})
     # Pass your incoming WhatsApp text to the AI
     print(Body)
     ai_response = model.generate_content(current_payload)
     print(ai_response.text)
     # 4. Commit this new exchange permanently to our JSON file
     save_to_history(From, Body, ai_response.text)
-    
+
+    nutrition = extract_structured_nutrition(Body, ai_response.text)
+    print(nutrition)
+    if should_save_nutrition_log(nutrition):
+        log_entry = {**nutrition}
+        log_entry.pop("is_food_log", None)
+        save_nutrition_log(From, log_entry)
+
     # Format the AI's text into Twilio's required XML response format
     twiml = MessagingResponse()
     twiml.message(ai_response.text)  # Append system instruction for context
     
     return Response(content=str(twiml), media_type="application/xml")
-
-# --- HELPER FUNCTIONS FOR JSON STORAGE ---
-def load_user_history(phone_number: str) -> list:
-    """Loads chat history for a specific phone number from the JSON file."""
-    if not os.path.exists(HISTORY_FILE):
-        return []
-    try:
-        with open(HISTORY_FILE, "r") as f:
-            data = json.load(f)
-            return data.get(phone_number, [])
-    except (json.JSONDecodeError, FileNotFoundError):
-        return []
-
-def save_to_history(phone_number: str, user_msg: str, ai_msg: str):
-    """Appends the new exchange to the JSON file, creating it if missing."""
-    data = {}
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r") as f:
-                data = json.load(f)
-        except json.JSONDecodeError:
-            data = {}
-
-    if phone_number not in data:
-        data[phone_number] = []
-
-    # Format strictly to match Gemini's expected content structure
-    data[phone_number].append({"role": "user", "parts": [user_msg]})
-    data[phone_number].append({"role": "model", "parts": [ai_msg]})
-
-    with open(HISTORY_FILE, "w") as f:
-        json.dump(data, f, indent=4)
-# ----------------------------------------
