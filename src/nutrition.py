@@ -27,6 +27,8 @@ class MealLog(BaseModel):
     protein_g: int = Field(description="Grams of protein.")
     carbs_g: int = Field(description="Grams of carbohydrates.")
     fats_g: int = Field(description="Grams of dietary fats.")
+    product_name: str | None = Field(default=None)
+    source_type: str | None = Field(default=None)  # e.g. "commercial_product"
 
 
 def _resolve_meal_timestamp(inferred: str, reference_time: datetime) -> str:
@@ -38,8 +40,15 @@ def _resolve_meal_timestamp(inferred: str, reference_time: datetime) -> str:
 
 
 def should_save_nutrition_log(nutrition: dict[str, Any]) -> bool:
-    """Return True when the exchange represents an actual consumed meal or snack."""
-    return nutrition.get("is_food_log") is True and nutrition.get("calories", 0) > 0
+    """Return True when the exchange represents a concrete food entry or a pending food mention."""
+    if nutrition.get("is_food_log") is not True:
+        return False
+
+    has_explicit_food_reference = bool(
+        nutrition.get("product_name") or nutrition.get("raw_food_input")
+    )
+    has_calories = nutrition.get("calories", 0) > 0
+    return has_explicit_food_reference or has_calories
 
 
 def _filter_logs_for_range(
@@ -132,17 +141,23 @@ def extract_structured_nutrition(
         You are a backend database extraction parser. Analyze the conversation exchange.
         reference_time is when the user sent this message: {logged_at.isoformat()}
 
-        Set is_food_log to true ONLY when the user is reporting specific food or drinks
-        they actually consumed (e.g. "I had eggs and toast", "logged a protein shake").
+        Set is_food_log to true when the user is reporting specific food or drinks
+        they actually consumed, including restaurant items, packaged foods, or commercial products.
+
+        Treat the message as a food log when the user mentions:
+        - a specific dish, ingredient, meal, snack, or beverage
+        - a restaurant item or commercial product name
+        - and either provides explicit calories/macros or clearly describes a food item they ate
 
         Set is_food_log to false for:
-        - Questions or requests (e.g. "summarize my calories", "what did I eat?")
+        - Questions or requests (e.g. "summarize my calories", "what did I eat?", "How many calories does an apple have?")
         - Goal or target setting (e.g. "let's go with 3000 calories", "200g protein minimum")
         - BMR/TDEE discussions, profile updates, or general coaching chat
         - Messages with no concrete foods or drinks consumed
 
         When is_food_log is false, return 0 for all macro fields and set consumed_at to reference_time.
         When is_food_log is true, extract or estimate nutrition for the consumed items only.
+        If no calorie or macro values are provided, return 0 for those fields and preserve the product_name or food description.
 
         For consumed_at, infer when the food was eaten relative to reference_time:
         - "this morning" / "for breakfast" -> same calendar day, ~08:00
