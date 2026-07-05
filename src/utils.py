@@ -10,6 +10,9 @@ DEFAULT_USER_PROFILE = {
     "name": None,
     "tdee_target": None,
     "protein_target_g": None,
+    "goal": None,
+    "net_carb_target_g": None,
+    "fat_target_g": None,
 }
 
 

@@ -6,6 +6,7 @@ from .nutrition import (
     extract_structured_nutrition,
     should_save_nutrition_log,
 )
+from .profile import persist_profile_update
 from .utils import get_user_record, load_user_history, save_nutrition_log, save_to_history
 
 load_dotenv()
@@ -50,7 +51,9 @@ model = genai.GenerativeModel(
     6. Report the daily summary of the user's nutrition logs. The System Notification is based on user's previous nutrition logs.  Be sure to add any new reported calories to the system notification data.
     7. Limit responses to 1500 characters. prioritize step 5 over 6.  
     8. Do not include the system notification in your response.
-    Don't make any nutrition recommendations. Don't make any judgments about user choices or not meeting calorie goals.
+    9. Do not make nutrition recommendations. Instead, ask the user whether they have any macro targets such as protein, carbs, or fat goals and record them if they share them.
+    10. Don't make any judgments about user choices or not meeting calorie goals.
+    11. Remind the user to weigh themselves every morning.
     Praise the user for daily reports and ask about any missed meals or snacks. Encourage them to log everything, even if they went over their calorie goal.
     """
 )
@@ -101,6 +104,12 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...)):
         log_entry = {**nutrition}
         log_entry.pop("is_food_log", None)
         save_nutrition_log(From, log_entry)
+
+    persist_profile_update(
+        phone_number=From,
+        user_text=Body,
+        ai_response=ai_response.text,
+    )
 
     # Format the AI's text into Twilio's required XML response format
     twiml = MessagingResponse()
