@@ -5,6 +5,21 @@ from typing import Any
 import google.generativeai as genai
 from pydantic import BaseModel, Field
 
+MEAL_LOG_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "is_food_log": {"type": "boolean"},
+        "consumed_at": {"type": "string"},
+        "calories": {"type": "integer"},
+        "protein_g": {"type": "integer"},
+        "carbs_g": {"type": "integer"},
+        "fats_g": {"type": "integer"},
+        "product_name": {"type": "string"},
+        "source_type": {"type": "string"},
+    },
+    "required": ["is_food_log", "consumed_at", "calories", "protein_g", "carbs_g", "fats_g"],
+}
+
 # Define the exact contract your database requires
 class MealLog(BaseModel):
     is_food_log: bool = Field(
@@ -89,6 +104,60 @@ def _format_header_label(start_date: date, end_date: date) -> str:
     return f"{start_date.isoformat()} to {end_date.isoformat()} LOG PARAMETERS"
 
 
+def _calculate_totals_for_range(
+    nutrition_logs: list[dict[str, Any]],
+    start_date: date,
+    end_date: date,
+) -> dict[str, int]:
+    range_logs = _filter_logs_for_range(nutrition_logs, start_date, end_date)
+    return {
+        "calories": sum(log.get("calories", 0) for log in range_logs),
+        "protein_g": sum(log.get("protein_g", 0) for log in range_logs),
+        "carbs_g": sum(log.get("carbs_g", 0) for log in range_logs),
+        "fats_g": sum(log.get("fats_g", 0) for log in range_logs),
+    }
+
+
+def build_daily_summary_header(
+    user_profile: dict[str, Any],
+    nutrition_logs: list[dict[str, Any]],
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> str:
+    target_start = start_date or date.today()
+    target_end = end_date or target_start
+    if target_start > target_end:
+        target_start, target_end = target_end, target_start
+
+    totals = _calculate_totals_for_range(nutrition_logs, target_start, target_end)
+    calorie_target = user_profile.get("tdee_target")
+    protein_target = user_profile.get("protein_target_g")
+    carb_target = user_profile.get("net_carb_target_g")
+    fat_target = user_profile.get("fat_target_g")
+
+    target_parts = []
+    if calorie_target is not None:
+        target_parts.append(f"Target: {calorie_target} kcal")
+    if protein_target is not None:
+        target_parts.append(f"Target: {protein_target} g")
+    if carb_target is not None:
+        target_parts.append(f"Target: {carb_target} g")
+    if fat_target is not None:
+        target_parts.append(f"Target: {fat_target} g")
+
+    summary = [
+        "Current Daily Stats:",
+        f"Calories: {totals['calories']} kcal",
+        f"Protein: {totals['protein_g']} g",
+        f"Carbs: {totals['carbs_g']} g",
+        f"Fat: {totals['fats_g']} g",
+    ]
+    if target_parts:
+        summary.append("")
+        summary.extend(target_parts)
+    return "\n".join(summary)
+
+
 def build_daily_log_notification(
     user_profile: dict[str, Any],
     nutrition_logs: list[dict[str, Any]],
@@ -105,14 +174,7 @@ def build_daily_log_notification(
     if target_start > target_end:
         target_start, target_end = target_end, target_start
 
-    range_logs = _filter_logs_for_range(nutrition_logs, target_start, target_end)
-
-    totals = {
-        "calories": sum(log.get("calories", 0) for log in range_logs),
-        "protein_g": sum(log.get("protein_g", 0) for log in range_logs),
-        "carbs_g": sum(log.get("carbs_g", 0) for log in range_logs),
-        "fats_g": sum(log.get("fats_g", 0) for log in range_logs),
-    }
+    totals = _calculate_totals_for_range(nutrition_logs, target_start, target_end)
 
     header = _format_header_label(target_start, target_end)
     period_label = _format_period_label(target_start, target_end)
@@ -157,6 +219,7 @@ def extract_structured_nutrition(
 
         When is_food_log is false, return 0 for all macro fields and set consumed_at to reference_time.
         When is_food_log is true, extract or estimate nutrition for the consumed items only.
+        If the user provides calories but not macros, estimate plausible protein, carbs, and fats based on the food type.
         If no calorie or macro values are provided, return 0 for those fields and preserve the product_name or food description.
 
         For consumed_at, infer when the food was eaten relative to reference_time:
@@ -181,8 +244,8 @@ def extract_structured_nutrition(
         analysis_payload,
         generation_config={
             "response_mime_type": "application/json",
-            "response_schema": MealLog
-        }
+            "response_schema": MEAL_LOG_RESPONSE_SCHEMA,
+        },
     )
     
     # Parse the guaranteed JSON string back into a clean dictionary

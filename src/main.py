@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 
 from .nutrition import (
     build_daily_log_notification,
+    build_daily_summary_header,
     extract_structured_nutrition,
     should_save_nutrition_log,
 )
@@ -94,13 +95,25 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...)):
     current_payload.append({"role": "user", "parts": [system_notification, Body]})
     # Pass your incoming WhatsApp text to the AI
     print(Body)
-    ai_response = model.generate_content(current_payload)
-    print(ai_response.text)
+    try:
+        ai_response = model.generate_content(current_payload)
+        nutrition = extract_structured_nutrition(Body, ai_response.text)
+    except Exception as exc:
+        print("Webhook error:", exc)
+        twiml = MessagingResponse()
+        twiml.message("I hit a snag while processing your message. Please try again.")
+        return Response(content=str(twiml), media_type="application/xml")
+
     # 4. Commit this new exchange permanently to our JSON file
     save_to_history(From, Body, ai_response.text)
 
-    nutrition = extract_structured_nutrition(Body, ai_response.text)
-    print(nutrition)
+    if Body.strip().lower().startswith("give me a summary") or "summary of my nutrition" in Body.lower():
+        summary_header = build_daily_summary_header(
+            record["user_profile"],
+            record["nutrition_logs"],
+        )
+        ai_response = type("Response", (), {"text": summary_header})()
+
     if should_save_nutrition_log(nutrition):
         log_entry = {**nutrition}
         log_entry.pop("is_food_log", None)
